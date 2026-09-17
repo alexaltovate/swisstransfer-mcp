@@ -60,7 +60,7 @@ export interface UploadOptions {
   recipients?: string[];
 }
 
-const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB
+const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
 
 async function apiRequest<T>(
   token: string,
@@ -192,7 +192,7 @@ export async function uploadFiles(
 
   const linkId = completion.data.link.id;
   return {
-    linkUrl: `https://www.swisstransfer.com/d/${linkId}`,
+    linkUrl: `https://www.swisstransfer.com/dl/${linkId}`,
     linkId,
     transfer,
   };
@@ -233,17 +233,33 @@ export async function deleteTransfer(
 async function putToPresigned(
   url: string,
   data: Buffer | Uint8Array,
+  retries = 3,
 ): Promise<string | null> {
-  const res = await fetch(url, {
-    method: "PUT",
-    body: data as unknown as BodyInit,
-    headers: { "Content-Type": "application/octet-stream" },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Upload auf Presigned-URL fehlgeschlagen (${res.status}): ${text}`);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "PUT",
+        body: data as unknown as BodyInit,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        if (attempt < retries && res.status >= 500) {
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
+          continue;
+        }
+        throw new Error(`Upload auf Presigned-URL fehlgeschlagen (${res.status}): ${text}`);
+      }
+      return res.headers.get("etag");
+    } catch (err) {
+      if (attempt < retries && err instanceof TypeError) {
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+        continue;
+      }
+      throw err;
+    }
   }
-  return res.headers.get("etag");
+  return null;
 }
 
 function guessMime(filePath: string): string {
